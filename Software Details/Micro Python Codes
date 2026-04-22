@@ -1,0 +1,586 @@
+Version 1 (basic working)
+import time
+import math
+from machine import Pin, I2C
+from pca9685 import PCA9685
+
+# ── Hardware ──────────────────────────────────────────────────
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400_000)
+pca = PCA9685(i2c)
+pca.freq(50)
+
+# ── PWM limits ────────────────────────────────────────────────
+SERVOMIN = 225
+SERVOMAX = 425
+NUM_SERVOS = 8
+DEG_MIN = 0
+DEG_MAX = 50
+DEG_MID = 25.0
+
+# ── Channel mapping ───────────────────────────────────────────
+# ch0 = FR hip    ch4 = FR knee
+# ch1 = FL hip    ch5 = FL knee
+# ch2 = BL hip    ch6 = BL knee
+# ch3 = BR hip    ch7 = BR knee
+
+def deg_to_pwm(degrees):
+    pwm = SERVOMIN + (degrees / 90.0) * (SERVOMAX - SERVOMIN)
+    return max(SERVOMIN, min(SERVOMAX, int(pwm)))
+
+def set_servo(ch, degrees):
+    degrees = max(DEG_MIN, min(DEG_MAX, degrees))
+    pca.duty(ch, deg_to_pwm(degrees))
+
+def set_all(degrees):
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, degrees)
+
+# ── Smooth move one servo ─────────────────────────────────────
+def smooth(ch, from_deg, to_deg, steps=20, tick_ms=18):
+    """Move a single servo smoothly from one angle to another."""
+    for s in range(steps + 1):
+        t = s / steps
+        deg = from_deg + t * (to_deg - from_deg)
+        set_servo(ch, deg)
+        time.sleep_ms(tick_ms)
+
+# ── Stand still — all legs planted ───────────────────────────
+def stand():
+    set_all(DEG_MID)
+    time.sleep_ms(500)
+
+# ══════════════════════════════════════════════════════════════
+# HELLO WAVE
+# Uses the FR leg (ch0 = hip, ch4 = knee) as the "arm"
+# 1. Lifts the FR knee up high (raises the arm)
+# 2. Swings the FR hip left and right repeatedly (waving)
+# 3. Lowers the leg back down when done
+# All other 3 legs stay planted so robot stays balanced
+# ══════════════════════════════════════════════════════════════
+
+def hello_wave(waves=4):
+    print("Hello!")
+
+    # Step 1: stand still so robot is stable
+    stand()
+    time.sleep_ms(300)
+
+    # Step 2: raise the FR leg (ch4 knee lifts UP, ch0 hip goes forward)
+    print("Raising arm...")
+    smooth(ch=4, from_deg=DEG_MID, to_deg=DEG_MAX, steps=25, tick_ms=15)  # knee up
+    smooth(ch=0, from_deg=DEG_MID, to_deg=40,       steps=20, tick_ms=15)  # hip forward
+    time.sleep_ms(300)
+
+    # Step 3: wave left and right
+    print("Waving...")
+    hip_left  = 15   # swing left
+    hip_right = 42   # swing right
+
+    for w in range(waves):
+        # swing to the left
+        smooth(ch=0, from_deg=40, to_deg=hip_left,  steps=15, tick_ms=12)
+        time.sleep_ms(80)
+        # swing to the right
+        smooth(ch=0, from_deg=hip_left, to_deg=hip_right, steps=15, tick_ms=12)
+        time.sleep_ms(80)
+
+    # back to center after waving
+    smooth(ch=0, from_deg=hip_right, to_deg=DEG_MID, steps=15, tick_ms=15)
+
+    # Step 4: lower the leg back down gently
+    print("Lowering arm...")
+    smooth(ch=4, from_deg=DEG_MAX, to_deg=DEG_MID, steps=25, tick_ms=15)  # knee down
+    time.sleep_ms(400)
+
+    print("Done waving!")
+
+# ══════════════════════════════════════════════════════════════
+# STARTUP + RUN
+# ══════════════════════════════════════════════════════════════
+print("Zeroing...")
+set_all(0)
+time.sleep(1)
+
+print("Standing up...")
+for s in range(31):
+    t = s / 30
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, t * DEG_MID)
+    time.sleep_ms(20)
+time.sleep(1)
+
+# Do the hello wave
+hello_wave(waves=4)
+
+# After waving, just hold the standing position
+print("Complete. Robot is standing.")
+stand()
+
+Final version (complete system)
+Code 1 for walking forward-
+import time
+import math
+from machine import Pin, I2C
+from pca9685 import PCA9685
+
+SERVOMIN = 225
+SERVOMAX = 425
+NUM_SERVOS = 8
+TICK_MS    = 20
+STEPS      = 30
+
+DEG_MIN = 0
+DEG_MAX = 50
+DEG_MID = (DEG_MIN + DEG_MAX) / 2
+
+PHASE = [
+    0,              # ch0 hip
+    math.pi,        # ch1 hip
+    math.pi,        # ch2 hip
+    0,              # ch3 hip
+    -math.pi / 2,   # ch4 knee
+    -math.pi / 2,   # ch5 knee  ← FIXED (was +pi/2)
+    -math.pi / 2,   # ch6 knee  ← FIXED (was +pi/2)
+    -math.pi / 2,   # ch7 knee
+]
+
+HIP_AMP  = 20
+KNEE_AMP = 12
+
+AMP = [
+    HIP_AMP,
+    HIP_AMP,
+    HIP_AMP,
+    HIP_AMP,
+    KNEE_AMP,
+    KNEE_AMP,
+    KNEE_AMP,
+    KNEE_AMP,
+]
+
+def deg_to_pwm(degrees: float) -> int:
+    pwm = SERVOMIN + (degrees / 90.0) * (SERVOMAX - SERVOMIN)
+    return max(SERVOMIN, min(SERVOMAX, int(pwm)))
+
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400_000)
+pca = PCA9685(i2c)
+pca.freq(50)
+
+def set_servo(ch: int, pwm_val: int) -> None:
+    pwm_val = max(SERVOMIN, min(SERVOMAX, int(pwm_val)))
+    pca.duty(ch, pwm_val)
+
+print("Zeroing all servos...")
+for ch in range(NUM_SERVOS):
+    set_servo(ch, deg_to_pwm(0))
+time.sleep(2)
+
+print("Moving to midpoint stance...")
+for step in range(STEPS + 1):
+    t = step / STEPS
+    for ch in range(NUM_SERVOS):
+        deg = t * DEG_MID
+        set_servo(ch, deg_to_pwm(deg))
+    time.sleep_ms(TICK_MS)
+time.sleep(1)
+
+print("Walk cycle starting...")
+step = 0
+while True:
+    angle = (2 * math.pi * step) / STEPS
+    for ch in range(NUM_SERVOS):
+        deg = DEG_MID + AMP[ch] * math.sin(angle + PHASE[ch])
+        deg = max(DEG_MIN, min(DEG_MAX, deg))
+        set_servo(ch, deg_to_pwm(deg))
+    time.sleep_ms(TICK_MS)
+    step = (step + 1) % STEPS
+
+
+Code 2 for Dancing-
+import time
+import math
+from machine import Pin, I2C
+from pca9685 import PCA9685
+
+# ── Hardware ──────────────────────────────────────────────────
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400_000)
+pca = PCA9685(i2c)
+pca.freq(50)
+
+# ── Ultrasonic sensor ─────────────────────────────────────────
+TRIG = Pin(14, Pin.OUT)
+ECHO = Pin(17, Pin.IN)
+OBSTACLE_CM = 20
+
+# ── PWM limits ────────────────────────────────────────────────
+SERVOMIN   = 225
+SERVOMAX   = 425
+NUM_SERVOS = 8
+
+DEG_MIN = 0
+DEG_MAX = 50
+DEG_MID = 25.0
+
+# ── Gait config ───────────────────────────────────────────────
+STEPS   = 60     # 60 steps per cycle = smooth motion
+TICK_MS = 12     # 12ms per step = fluid updates
+
+# ── Channel mapping ───────────────────────────────────────────
+# ch0 = FR hip    ch4 = FR knee
+# ch1 = FL hip    ch5 = FL knee
+# ch2 = BL hip    ch6 = BL knee
+# ch3 = BR hip    ch7 = BR knee
+#
+# Diagonal pairs (move together):
+#   Group A: FR + BL  (ch0, ch4, ch2, ch6)
+#   Group B: FL + BR  (ch1, ch5, ch3, ch7)  — 180° opposite to A
+
+PHASE = [
+    0,               # ch0 FR hip  — Group A
+    math.pi,         # ch1 FL hip  — Group B
+    0,               # ch2 BL hip  — Group A
+    math.pi,         # ch3 BR hip  — Group B
+    -math.pi / 2,    # ch4 FR knee — lifts before ch0 swings
+     math.pi / 2,    # ch5 FL knee — lifts before ch1 swings
+    -math.pi / 2,    # ch6 BL knee — lifts before ch2 swings
+     math.pi / 2,    # ch7 BR knee — lifts before ch3 swings
+]
+
+HIP_AMP  = 20
+KNEE_AMP = 12
+
+AMP = [
+    HIP_AMP,    # ch0
+    HIP_AMP,    # ch1
+    HIP_AMP,    # ch2
+    HIP_AMP,    # ch3
+    KNEE_AMP,   # ch4
+    KNEE_AMP,   # ch5
+    KNEE_AMP,   # ch6
+    KNEE_AMP,   # ch7
+]
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════
+
+def deg_to_pwm(degrees):
+    pwm = SERVOMIN + (degrees / 90.0) * (SERVOMAX - SERVOMIN)
+    return max(SERVOMIN, min(SERVOMAX, int(pwm)))
+
+def set_servo(ch, degrees):
+    degrees = max(DEG_MIN, min(DEG_MAX, float(degrees)))
+    pca.duty(ch, deg_to_pwm(degrees))
+
+def set_all(degrees):
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, degrees)
+
+def smooth(ch, from_deg, to_deg, steps=20, tick_ms=15):
+    """Move a single servo smoothly from one angle to another."""
+    for s in range(steps + 1):
+        t = s / steps
+        set_servo(ch, from_deg + t * (to_deg - from_deg))
+        time.sleep_ms(tick_ms)
+
+def stand():
+    """Return all legs to neutral standing position."""
+    set_all(DEG_MID)
+    time.sleep_ms(400)
+
+def get_distance():
+    """Read HC-SR04. Returns cm, or 999 if nothing detected."""
+    TRIG.value(0)
+    time.sleep_us(2)
+    TRIG.value(1)
+    time.sleep_us(10)
+    TRIG.value(0)
+    timeout = 30_000
+    t0 = time.ticks_us()
+    while ECHO.value() == 0:
+        if time.ticks_diff(time.ticks_us(), t0) > timeout:
+            return 999
+    t1 = time.ticks_us()
+    while ECHO.value() == 1:
+        if time.ticks_diff(time.ticks_us(), t1) > timeout:
+            return 999
+    t2 = time.ticks_us()
+    return round((time.ticks_diff(t2, t1) * 0.0343) / 2, 1)
+
+# ══════════════════════════════════════════════════════════════
+# DANCE MOVES
+# ══════════════════════════════════════════════════════════════
+
+def dance_wave(repeats=3):
+    """All hips sway left and right — body waves side to side."""
+    print("Dance: wave")
+    steps = 40
+    for i in range(repeats * steps):
+        sweep = 12 * math.sin((2 * math.pi * i) / steps)
+        for ch in range(4):
+            set_servo(ch, DEG_MID + sweep)
+        for ch in range(4, 8):
+            set_servo(ch, DEG_MID)
+        time.sleep_ms(18)
+
+def dance_bounce(repeats=4):
+    """All knees lift and lower together — robot bobs up and down."""
+    print("Dance: bounce")
+    steps = 30
+    for i in range(repeats * steps):
+        lift = 10 * math.sin((2 * math.pi * i) / steps)
+        for ch in range(4):
+            set_servo(ch, DEG_MID)
+        for ch in range(4, 8):
+            set_servo(ch, DEG_MID + lift)
+        time.sleep_ms(20)
+
+def dance_shimmy(repeats=3):
+    """Hips wiggle while diagonal knees alternate — most impressive."""
+    print("Dance: shimmy")
+    steps = 40
+    for i in range(repeats * steps):
+        angle      = (2 * math.pi * i) / steps
+        hip_wiggle = 12 * math.sin(angle)
+        knee_alt   = 10 * math.sin(angle + math.pi / 2)
+        set_servo(0, DEG_MID + hip_wiggle)
+        set_servo(1, DEG_MID - hip_wiggle)
+        set_servo(2, DEG_MID - hip_wiggle)
+        set_servo(3, DEG_MID + hip_wiggle)
+        set_servo(4, DEG_MID + knee_alt)
+        set_servo(5, DEG_MID - knee_alt)
+        set_servo(6, DEG_MID - knee_alt)
+        set_servo(7, DEG_MID + knee_alt)
+        time.sleep_ms(15)
+
+def full_dance():
+    print("=== DANCE START ===")
+    dance_wave(repeats=3)
+    stand()
+    dance_bounce(repeats=4)
+    stand()
+    dance_shimmy(repeats=3)
+    stand()
+    print("=== DANCE END ===")
+
+# ══════════════════════════════════════════════════════════════
+# HELLO WAVE
+# Raises FR leg and waves it left and right
+# ══════════════════════════════════════════════════════════════
+
+def hello_wave(waves=4):
+    print("Hello!")
+    stand()
+    time.sleep_ms(300)
+
+    # Raise FR leg
+    smooth(ch=4, from_deg=DEG_MID, to_deg=DEG_MAX, steps=25, tick_ms=15)
+    smooth(ch=0, from_deg=DEG_MID, to_deg=40,       steps=20, tick_ms=15)
+    time.sleep_ms(300)
+
+    # Wave left and right
+    for w in range(waves):
+        smooth(ch=0, from_deg=40,  to_deg=15, steps=15, tick_ms=12)
+        time.sleep_ms(80)
+        smooth(ch=0, from_deg=15,  to_deg=42, steps=15, tick_ms=12)
+        time.sleep_ms(80)
+
+    # Back to center
+    smooth(ch=0, from_deg=42,      to_deg=DEG_MID, steps=15, tick_ms=15)
+
+    # Lower leg
+    smooth(ch=4, from_deg=DEG_MAX, to_deg=DEG_MID, steps=25, tick_ms=15)
+    time.sleep_ms(400)
+    print("Done waving!")
+
+# ══════════════════════════════════════════════════════════════
+# STARTUP SEQUENCE
+# ══════════════════════════════════════════════════════════════
+print("Spider robot starting...")
+
+print("Zeroing all servos...")
+set_all(0)
+time.sleep(1)
+
+print("Standing up...")
+for s in range(STEPS + 1):
+    t = s / STEPS
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, t * DEG_MID)
+    time.sleep_ms(TICK_MS)
+time.sleep(1)
+
+# ── Startup show ──────────────────────────────────────────────
+# Comment any of these out if you don't want them on startup
+hello_wave(waves=4)
+time.sleep_ms(500)
+full_dance()
+time.sleep_ms(500)
+
+# ══════════════════════════════════════════════════════════════
+# MAIN WALK LOOP WITH OBSTACLE AVOIDANCE
+# ══════════════════════════════════════════════════════════════
+print("Walking...")
+step = 0
+sensor_counter = 0
+
+try:
+    while True:
+
+        # ── Sensor check every 10 steps ───────────────────────
+        sensor_counter += 1
+        if sensor_counter >= 10:
+            sensor_counter = 0
+            dist = get_distance()
+            print("Distance:", dist, "cm")
+
+            if dist < OBSTACLE_CM:
+                print("Obstacle! Turning...")
+                # Turn right: flip hip directions for 2 cycles
+                for t_step in range(STEPS * 2):
+                    angle = (2 * math.pi * t_step) / STEPS
+                    for ch in range(NUM_SERVOS):
+                        if ch < 4:
+                            deg = DEG_MID - AMP[ch] * math.sin(angle + PHASE[ch])
+                        else:
+                            deg = DEG_MID + AMP[ch] * math.sin(angle + PHASE[ch])
+                        deg = max(DEG_MIN, min(DEG_MAX, deg))
+                        set_servo(ch, deg)
+                    time.sleep_ms(TICK_MS)
+                step = 0
+                continue
+
+        # ── Walk one step ─────────────────────────────────────
+        angle = (2 * math.pi * step) / STEPS
+        for ch in range(NUM_SERVOS):
+            deg = DEG_MID + AMP[ch] * math.sin(angle + PHASE[ch])
+            deg = max(DEG_MIN, min(DEG_MAX, deg))
+            set_servo(ch, deg)
+
+        time.sleep_ms(TICK_MS)
+        step = (step + 1) % STEPS
+
+except KeyboardInterrupt:
+    print("Stopped.")
+    stand()
+
+Code 3 for waving hello
+import time
+import math
+from machine import Pin, I2C
+from pca9685 import PCA9685
+
+# ── Hardware ──────────────────────────────────────────────────
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400_000)
+pca = PCA9685(i2c)
+pca.freq(50)
+
+# ── PWM limits ────────────────────────────────────────────────
+SERVOMIN = 225
+SERVOMAX = 425
+NUM_SERVOS = 8
+DEG_MIN = 0
+DEG_MAX = 50
+DEG_MID = 25.0
+
+# ── Channel mapping ───────────────────────────────────────────
+# ch0 = FR hip    ch4 = FR knee
+# ch1 = FL hip    ch5 = FL knee
+# ch2 = BL hip    ch6 = BL knee
+# ch3 = BR hip    ch7 = BR knee
+
+def deg_to_pwm(degrees):
+    pwm = SERVOMIN + (degrees / 90.0) * (SERVOMAX - SERVOMIN)
+    return max(SERVOMIN, min(SERVOMAX, int(pwm)))
+
+def set_servo(ch, degrees):
+    degrees = max(DEG_MIN, min(DEG_MAX, degrees))
+    pca.duty(ch, deg_to_pwm(degrees))
+
+def set_all(degrees):
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, degrees)
+
+# ── Smooth move one servo ─────────────────────────────────────
+def smooth(ch, from_deg, to_deg, steps=20, tick_ms=18):
+    """Move a single servo smoothly from one angle to another."""
+    for s in range(steps + 1):
+        t = s / steps
+        deg = from_deg + t * (to_deg - from_deg)
+        set_servo(ch, deg)
+        time.sleep_ms(tick_ms)
+
+# ── Stand still — all legs planted ───────────────────────────
+def stand():
+    set_all(DEG_MID)
+    time.sleep_ms(500)
+
+# ══════════════════════════════════════════════════════════════
+# HELLO WAVE
+# Uses the FR leg (ch0 = hip, ch4 = knee) as the "arm"
+# 1. Lifts the FR knee up high (raises the arm)
+# 2. Swings the FR hip left and right repeatedly (waving)
+# 3. Lowers the leg back down when done
+# All other 3 legs stay planted so robot stays balanced
+# ══════════════════════════════════════════════════════════════
+
+def hello_wave(waves=4):
+    print("Hello!")
+
+    # Step 1: stand still so robot is stable
+    stand()
+    time.sleep_ms(300)
+
+    # Step 2: raise the FR leg (ch4 knee lifts UP, ch0 hip goes forward)
+    print("Raising arm...")
+    smooth(ch=4, from_deg=DEG_MID, to_deg=DEG_MAX, steps=25, tick_ms=15)  # knee up
+    smooth(ch=0, from_deg=DEG_MID, to_deg=40,       steps=20, tick_ms=15)  # hip forward
+    time.sleep_ms(300)
+
+    # Step 3: wave left and right
+    print("Waving...")
+    hip_left  = 15   # swing left
+    hip_right = 42   # swing right
+
+    for w in range(waves):
+        # swing to the left
+        smooth(ch=0, from_deg=40, to_deg=hip_left,  steps=15, tick_ms=12)
+        time.sleep_ms(80)
+        # swing to the right
+        smooth(ch=0, from_deg=hip_left, to_deg=hip_right, steps=15, tick_ms=12)
+        time.sleep_ms(80)
+
+    # back to center after waving
+    smooth(ch=0, from_deg=hip_right, to_deg=DEG_MID, steps=15, tick_ms=15)
+
+    # Step 4: lower the leg back down gently
+    print("Lowering arm...")
+    smooth(ch=4, from_deg=DEG_MAX, to_deg=DEG_MID, steps=25, tick_ms=15)  # knee down
+    time.sleep_ms(400)
+
+    print("Done waving!")
+
+# ══════════════════════════════════════════════════════════════
+# STARTUP + RUN
+# ══════════════════════════════════════════════════════════════
+print("Zeroing...")
+set_all(0)
+time.sleep(1)
+
+print("Standing up...")
+for s in range(31):
+    t = s / 30
+    for ch in range(NUM_SERVOS):
+        set_servo(ch, t * DEG_MID)
+    time.sleep_ms(20)
+time.sleep(1)
+
+# Do the hello wave
+hello_wave(waves=4)
+
+# After waving, just hold the standing position
+print("Complete. Robot is standing.")
+stand()
+
+
+
